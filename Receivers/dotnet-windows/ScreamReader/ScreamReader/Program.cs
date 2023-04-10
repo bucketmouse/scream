@@ -13,10 +13,9 @@ namespace ScreamReader
         private MainForm mainForm;
         private Task reconnectTask = null;
         
-        protected bool _shouldReconnect = true;
-        protected bool _lastExitUnclean = false;
-        
-        
+        protected bool _shouldReconnect = true;     // reconnect every 30 seconds
+        protected bool _lastExitUnclean = false;    // only reconnect if we didn't manually stop the listener
+         
         public bool shouldReconnect
         {
             get => _shouldReconnect;
@@ -33,9 +32,9 @@ namespace ScreamReader
             if(_shouldReconnect && reconnectTask == null)
                 reconnectTask = Task.Run(async () =>
                 {
+                    // try to reconnect after 1 second for network hiccups, then every 30 seconds
                     while (_shouldReconnect && _lastExitUnclean)
                     {
-                        // initial short delay so we can reconnect immediately in case of network hiccups eg crap wifi
                         await Task.Delay(1000);
                         if (!IsListening && _shouldReconnect)
                             StartListener();
@@ -48,9 +47,7 @@ namespace ScreamReader
         public ScreamReaderTray()
         {
             try
-            {
-                _lastExitUnclean = false;
-
+            { 
                 trayIcon = new NotifyIcon();
                 trayIcon.Text = "ScreamReader";
                 trayIcon.Icon = Properties.Resources.speaker_mute;
@@ -100,26 +97,28 @@ namespace ScreamReader
 
         internal void StartListener()
         {
-            StopListener();;
+            StopListener();
+
             udpPlayer = new UdpWaveStreamPlayer();
             if (udpPlayer.Start())
-                udpPlayer.Volume = Math.Max(0, Math.Min(this.mainForm.loudnessFader.Value, 100));
-            else
             {
-                _lastExitUnclean = udpPlayer.uncleanExit;
-                udpPlayer.Dispose();
-            }
+                udpPlayer.Volume = Math.Max(0, Math.Min(this.mainForm.loudnessFader.Value, 100));
+                UpdateUI();
+                return;
+            }   
 
-            UpdateUI();
+            // this calls updateUI
+            StopListener();
         }
 
+        // Update labels and such
         internal void UpdateUI()
         {
             trayMenu.MenuItems.Clear();
             trayMenu.MenuItems.Add(IsListening ? "Stop Listener" : "Start Listener", ToggleActive);
             trayIcon.Icon = IsListening ? Properties.Resources.speaker_active : Properties.Resources.speaker_mute;
             trayMenu.MenuItems.Add("Exit", OnExit);
-            this.mainForm.loudnessFader.Enabled = IsListening;
+            mainForm.loudnessFader.Enabled = IsListening;
             if (IsListening)
                 mainForm.loudnessFader.Value = udpPlayer.Volume;
         }
@@ -166,7 +165,7 @@ namespace ScreamReader
             bool createdNew;
             mutex = new Mutex(true, "ScreamReaderNet", out createdNew);
 
-            if(!createdNew)
+            if(!createdNew) // disallow multiple copies since they won't be able to grab the listen port anyways
                 return;
             
             Application.EnableVisualStyles();
