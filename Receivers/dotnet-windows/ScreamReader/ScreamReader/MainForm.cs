@@ -12,7 +12,7 @@ namespace ScreamReader
         {
             InitializeComponent();
 
-            this.screamReaderTray = screamReaderTray;
+            this.screamReaderTray = screamReaderTray; 
 
             this.FormClosing += (object sender, FormClosingEventArgs e) =>
             {
@@ -25,11 +25,13 @@ namespace ScreamReader
 
             this.loudnessFader.ValueChanged += (object sender, EventArgs e) =>
             {
-                this.screamReaderTray.udpPlayer.Volume = this.loudnessFader.Value;
+                if(this.screamReaderTray.udpPlayer != null)
+                    this.screamReaderTray.udpPlayer.Volume = this.loudnessFader.Value;
                 this.volumeLabel.Text = this.loudnessFader.Value.ToString() + "%";
             };
 
-            this.loudnessFader.Value = this.screamReaderTray.udpPlayer.Volume;
+            if(this.screamReaderTray.udpPlayer != null)
+                this.loudnessFader.Value = this.screamReaderTray.udpPlayer.Volume; 
         }
 
         private void FileOnExitClick(object sender, EventArgs e)
@@ -38,10 +40,20 @@ namespace ScreamReader
             Environment.Exit(0);
         }
 
+        private void ToggleActive(object sender, EventArgs e)
+        {
+            this.screamReaderTray.ToggleActive(sender,e);
+        }
+
         private void AboutToolStripMenuItem_Click(object sender, EventArgs e)
         {
             var about = new About();
             about.ShowDialog(this);
+        }
+
+        private void autoReconnect_CheckedChanged(object sender, EventArgs e)
+        {
+            this.screamReaderTray.shouldReconnect = (sender as CheckBox).Checked;
         }
     }
 }

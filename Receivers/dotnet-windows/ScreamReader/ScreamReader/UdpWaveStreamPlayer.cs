@@ -1,30 +1,32 @@
 ﻿using NAudio.Wave;
+
 using System;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Diagnostics;
-
 
 namespace ScreamReader
 {
     internal class UdpWaveStreamPlayer : IDisposable
     {
         #region static defaults
+
         /// <summary>
         /// The <see cref="IPAddress"/> scream is broadcasting to.
         /// </summary>
-        public static readonly IPAddress ScreamMulticastAddress =
-             IPAddress.Parse("239.255.77.77");
+        public static readonly IPAddress ScreamMulticastAddress = IPAddress.Parse("239.255.77.77");
 
         /// <summary>
         /// The port scream is broadcasting on.
         /// </summary>
         public static readonly int ScreamMulticastPort = 4010;
-        #endregion
+
+        #endregion static defaults
 
         #region instance variables
+
         /// <summary>
         /// The <see cref="IPAddress"/> in use.
         /// </summary>
@@ -34,10 +36,12 @@ namespace ScreamReader
         /// The port to listen to.
         /// </summary>
         protected int multicastPort { get; set; }
-        
-        private Semaphore startLock;
 
+        private Semaphore startLock; 
         private Semaphore shutdownLock;
+
+        // If we threw an exception and autoreconnect is on
+        public bool uncleanExit { get; protected set; } = false; 
 
         private CancellationTokenSource cancellationTokenSource;
 
@@ -46,15 +50,16 @@ namespace ScreamReader
         private WasapiOut output;
 
         private int volume;
-        #endregion
+
+        #endregion instance variables
 
         #region public properties
+
         /// <summary>
         /// Used to control the volume. Valid values are [0, 100].
         /// </summary>
         public int Volume
         {
-
             get
             {
                 if (this.output != null) this.volume = (int)(output.Volume * 100);
@@ -76,8 +81,8 @@ namespace ScreamReader
                 }
             }
         }
-        #endregion
 
+        #endregion public properties
 
         /// <summary>
         /// Default c'tor that supports Scream's default settings.
@@ -99,7 +104,7 @@ namespace ScreamReader
 
             this.startLock = new Semaphore(1, 1);
             this.shutdownLock = new Semaphore(0, 1);
-            
+
             this.udpClient = new UdpClient
             {
                 ExclusiveAddressUse = false
@@ -110,97 +115,118 @@ namespace ScreamReader
         /// Starts listening to the broadcast and plays back audio received from it.
         /// Subsequent calls to this method require to call <see cref="Stop"/> in between.
         /// </summary>
-        public virtual void Start()
+        public virtual bool Start()
         {
             this.startLock.WaitOne();
             this.cancellationTokenSource = new CancellationTokenSource();
 
             Task.Factory.StartNew(() =>
             {
-                var currentRate = 129;
-                var currentWidth = 16;
-                var currentChannels = 2;
-                var currentChannelsMapLsb = 0x03; // stereo
-                var currentChannelsMapMsb = 0x00;
-                var currentChannelsMap = (currentChannelsMapMsb << 8) | currentChannelsMapLsb;
-                var localEp = new IPEndPoint(IPAddress.Any, this.multicastPort);
+                try
+                {
+                    var currentRate = 129;
+                    var currentWidth = 16;
+                    var currentChannels = 2;
+                    var currentChannelsMapLsb = 0x03; // stereo
+                    var currentChannelsMapMsb = 0x00;
+                    var currentChannelsMap = (currentChannelsMapMsb << 8) | currentChannelsMapLsb;
+                    var localEp = new IPEndPoint(IPAddress.Any, this.multicastPort);
 
-                this.udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                this.udpClient.Client.Bind(localEp);
-                this.udpClient.JoinMulticastGroup(this.multicastAddress);
+                    this.udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    this.udpClient.Client.Bind(localEp);
+                    this.udpClient.JoinMulticastGroup(this.multicastAddress);
 
-                var rsws = new BufferedWaveProvider(new WaveFormat(44100, currentWidth, currentChannels)) { BufferDuration = TimeSpan.FromMilliseconds(200), DiscardOnBufferOverflow = true };
+                    var rsws = new BufferedWaveProvider(new WaveFormat(44100, currentWidth, currentChannels))
+                    { BufferDuration = TimeSpan.FromMilliseconds(200), DiscardOnBufferOverflow = true };
 
-                this.output = new WasapiOut();
-                // 
-                // This code isn't thread safe. Getting inconsistent results if Debug build is enabled and/or run from the debugger
-                // 
-                // If volume isn't initialized and Debugs are enabled the loudnessFader starts with the actual volume level
-                // This is minor though because the fader only checks once and doesn't handle any events so it will get out of sync
-                // 
-                this.volume = (int)(this.output.Volume * 100); // initialize for now
-                Debug.WriteLine("First volume check = {0}", this.volume);
-                Debug.WriteLine("First volume check = {0}", this.output.Volume * 100);
+                    this.output = new WasapiOut();
+                    //
+                    // This code isn't thread safe. Getting inconsistent results if Debug build is enabled and/or run from the debugger
+                    //
+                    // If volume isn't initialized and Debugs are enabled the loudnessFader starts with the actual volume level
+                    // This is minor though because the fader only checks once and doesn't handle any events so it will get out of sync
+                    //
+                    this.volume = (int)(this.output.Volume * 100); // initialize for now
+                    Debug.WriteLine("First volume check = {0}", this.volume);
+                    Debug.WriteLine("First volume check = {0}", this.output.Volume * 100);
 
 #if OVERRIDE_MASTERVOLUME
                 this.Volume = 100;
 #endif
 
-                this.output.Init(rsws);
-               
-                this.output.Play();
-                //this.volume = (int)this.output.Volume * 100; // should this go here? doesn't seem to read MasterVolumeLevelScalar
+                    this.output.Init(rsws);
+                    this.output.Play();
+                    //this.volume = (int)this.output.Volume * 100; // should this go here? doesn't seem to read MasterVolumeLevelScalar
 
-                Task.Factory.StartNew(() =>
-                {
-                    while (!this.cancellationTokenSource.IsCancellationRequested)
+                    Task.Factory.StartNew(() =>
                     {
-                        try
+                        while (!this.cancellationTokenSource.IsCancellationRequested)
                         {
-                            Byte[] data = this.udpClient.Receive(ref localEp);
-                            
-                            if (data[0] != currentRate || data[1] != currentWidth || data[2] != currentChannels || data[3] != currentChannelsMapLsb || data[4] != currentChannelsMapMsb)
+                            try
                             {
-                                currentRate = data[0];
-                                currentWidth = data[1];
-                                currentChannels = data[2];
-                                currentChannelsMapLsb = data[3];
-                                currentChannelsMapMsb = data[4];
-                                currentChannelsMap = (currentChannelsMapMsb << 8) | currentChannelsMapLsb;
+                                Byte[] data = this.udpClient.Receive(ref localEp);
 
-                                // TODO find a way to set a channel map in NAudio. I was not able to find any.
-                                // In practice if both the source and the receiver windows machine have the same speakers configuration setted this doesn't matter,
-                                // but in all other cases the channels will be possibly mismatched.
-                                this.output.Stop();
-                                var rate = ((currentRate >= 128) ? 44100 : 48000) * (currentRate % 128);
+                                if (data[0] != currentRate || data[1] != currentWidth || data[2] != currentChannels ||
+                                    data[3] != currentChannelsMapLsb || data[4] != currentChannelsMapMsb)
+                                {
+                                    currentRate = data[0];
+                                    currentWidth = data[1];
+                                    currentChannels = data[2];
+                                    currentChannelsMapLsb = data[3];
+                                    currentChannelsMapMsb = data[4];
+                                    currentChannelsMap = (currentChannelsMapMsb << 8) | currentChannelsMapLsb;
 
-                                rsws = new BufferedWaveProvider(new WaveFormat(rate, currentWidth, currentChannels)) { BufferDuration = TimeSpan.FromMilliseconds(200), DiscardOnBufferOverflow = true };
-                                this.output = new WasapiOut();
-                                //
-                                //    this.volume = (int)(this.output.Volume * 100);  // need to set this here or exception in loudnessFader dialog
-                                //    Debug.WriteLine("2nd volume check = {0}", this.volume);
-                                Debug.WriteLine("2nd volume check = {0}", this.output.Volume * 100);
+                                    // TODO find a way to set a channel map in NAudio. I was not able to find any.
+                                    // In practice if both the source and the receiver windows machine have the same speakers configuration setted this doesn't matter,
+                                    // but in all other cases the channels will be possibly mismatched.
+                                    this.output.Stop();
+                                    var rate = ((currentRate >= 128) ? 44100 : 48000) * (currentRate % 128);
 
-                                this.output.Init(rsws);
-                                this.output.Play();
-                            //    this.volume = (int)(this.output.Volume * 100); // can initialize here 
-                                Debug.WriteLine("3rd volume check = {0}", this.output.Volume * 100);
+                                    rsws = new BufferedWaveProvider(new WaveFormat(rate, currentWidth, currentChannels))
+                                    { BufferDuration = TimeSpan.FromMilliseconds(200), DiscardOnBufferOverflow = true };
+                                    this.output = new WasapiOut();
+                                    //
+                                    //    this.volume = (int)(this.output.Volume * 100);  // need to set this here or exception in loudnessFader dialog
+                                    //    Debug.WriteLine("2nd volume check = {0}", this.volume);
+                                    Debug.WriteLine("2nd volume check = {0}", this.output.Volume * 100);
+
+                                    this.output.Init(rsws);
+                                    this.output.Play();
+                                    //    this.volume = (int)(this.output.Volume * 100); // can initialize here
+                                    Debug.WriteLine("3rd volume check = {0}", this.output.Volume * 100);
+                                }
+
+                                rsws.AddSamples(data, 5, data.Length - 5);
                             }
-                            rsws.AddSamples(data, 5, data.Length - 5);
-                        } catch (SocketException) { } // Usually when interrupted
-                        catch(Exception e)
-                        {
-                            System.Windows.Forms.MessageBox.Show(e.StackTrace, e.Message);
-                           
+                            catch (SocketException)
+                            {
+                                this.uncleanExit = true;
+                                this.cancellationTokenSource.Cancel();
+                            } // Usually when interrupted
+                            catch (Exception e)
+                            {
+                                this.uncleanExit = true;
+                                System.Windows.Forms.MessageBox.Show(e.StackTrace, e.Message);
+                                this.cancellationTokenSource.Cancel();
+                            }
                         }
-                    }
-                }, this.cancellationTokenSource.Token);
+                    }, this.cancellationTokenSource.Token);
 
-                this.shutdownLock.WaitOne();
+                    this.shutdownLock.WaitOne();
 
-                this.output.Stop();
-                this.udpClient.Close();
+                    this.output.Stop();
+                    this.udpClient.Close();
+                }
+                catch (Exception e)
+                {
+                    System.Windows.Forms.MessageBox.Show(e.StackTrace, e.Message);
+                    this.uncleanExit = true;
+                    this.cancellationTokenSource.Cancel();
+                    return false;
+                }
+                return true;
             }, this.cancellationTokenSource.Token);
+           return !this.cancellationTokenSource.IsCancellationRequested;
         }
 
         /// <summary>
@@ -214,6 +240,7 @@ namespace ScreamReader
         }
 
         #region dispose
+
         public void Dispose()
         {
             this.Dispose(true);
@@ -227,6 +254,7 @@ namespace ScreamReader
                 this.shutdownLock.Dispose();
             }
         }
-        #endregion
+
+        #endregion dispose
     }
 }
